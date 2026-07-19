@@ -3,9 +3,9 @@ revision = 3
 requires-python = ">=3.11"
 
 [manifest]
-members = ["rebase-1"]
+members = ["targil-1"]
 
 [[package]]
-name = "rebase-1"
+name = "targil-1"
 version = "0.1.0"
 source = { virtual = "." }
