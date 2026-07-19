@@ -1,5 +1,6 @@
 import os
 import time
+import argparse
 from functools import lru_cache
 from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
@@ -29,20 +30,28 @@ def count_primes(numbers: list[int]) -> int:
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Count primes in a large file using multiple processes while respecting RAM limits.')
+    parser.add_argument('--safety', type=float, default=0.75, help='Safety parameter (0 < safety <= 1), defaults to 0.75')
+    args = parser.parse_args()
+
+    if not (0 < args.safety <= 1):
+        print(f"Warning: Safety parameter {args.safety} is invalid (must be 0 < safety <= 1). Using default value 0.75.")
+        args.safety = 0.75
+
     prime_counter = 0
     cpu_count = os.cpu_count() or 2
 
     # Total RAM limit is 500MB
     ram_limit_bytes = 500 * 1024 * 1024
+    ram_limit_bytes_safety = int(ram_limit_bytes * args.safety)
 
-    # SAFETY MARGIN:
-    # We must divide the 500MB RAM limit across all CPU cores.
-    # safety factor for overhead: 2
-    safety_factor = 2
-    max_bytes_in_batch = (ram_limit_bytes // cpu_count) // safety_factor
+
+    max_bytes_in_batch = ram_limit_bytes_safety // cpu_count
 
     print(f"CPU Cores detected: {cpu_count}")
-    print(f"Total RAM limit: 500 MB")
+    print(f"Safety parameter: {args.safety}")
+    print(f"RAM size: {ram_limit_bytes / (1024*1024):.2f} MB")
+    print(f"Effective RAM limit for overhead: {ram_limit_bytes_safety / (1024*1024):.2f} MB")
     print(f"Using: ProcessPoolExecutor (Multi-processing)")
     print(f"Batch size per core: {max_bytes_in_batch / (1024*1024):.2f} MB")
     print(f"----------------------\n")
@@ -50,10 +59,10 @@ if __name__ == '__main__':
     chunks_submitted = 0
     start_time = time.time()
 
-    with open("nums_200_mil.txt", "r", encoding="ascii") as file:
+    with open("input.txt", "r", encoding="ascii") as file:
         with ProcessPoolExecutor(max_workers=cpu_count) as executor:
             futures = set()
-            print("Reading file and processing tasks...")
+            print("Reading file and processing tasks")
 
             while True:
                 # Read a chunk from file
@@ -64,7 +73,7 @@ if __name__ == '__main__':
                 # Convert lines to integers
                 numbers_list = [int(line.strip()) for line in lines if line.strip()]
                 if numbers_list:
-                    # Submit the task directly
+                    # Submit the task
                     future = executor.submit(count_primes, numbers_list)
                     futures.add(future)
 
@@ -79,7 +88,6 @@ if __name__ == '__main__':
                         futures = wait_result.not_done
                         print(f"  > Chunk finished. Remaining active: {len(futures)}")
 
-            # Final collection
             print(f"File reading complete. Total chunks submitted: {chunks_submitted}")
             for f in as_completed(futures):
                 prime_counter += f.result()

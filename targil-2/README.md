@@ -15,13 +15,22 @@ First, open your terminal and navigate into the project directory:
 ```bash
 cd targil-2
 ```
-Ensure your input file (`nums_200_mil.txt`) is placed directly inside the `targil-2` folder.
+Ensure your input file (`input.txt`) is placed directly inside the `targil-2` folder.
 
 Ensure you have `uv` installed on your machine.
 
 ### 1. Run the script
 ```bash
 uv run main.py
+```
+
+### 2. Run with safety parameter
+You can control the memory usage by providing a `--safety` parameter (between 0 and 1).
+- `0.75` (default): Uses 0.75 of the 500MB RAM (375MB) to allow for overhead.
+- `1.0`: Uses the full 500MB RAM.
+
+```bash
+uv run main.py --safety 0.8
 ```
 
 ---
