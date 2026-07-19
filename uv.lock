@@ -1,0 +1,25 @@
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[manifest]
+members = [
+    "backend-rebase",
+    "rebase-1",
+    "targil-2",
+]
+
+[[package]]
+name = "backend-rebase"
+version = "0.1.0"
+source = { virtual = "." }
+
+[[package]]
+name = "rebase-1"
+version = "0.1.0"
+source = { virtual = "targil-1" }
+
+[[package]]
+name = "targil-2"
+version = "0.1.0"
+source = { virtual = "targil-2" }
