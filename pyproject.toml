@@ -1,0 +1,9 @@
+[project]
+name = "backend-rebase"
+version = "0.1.0"
+description = "A monorepo for backend exercises"
+dependencies = []
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = ["targil-1", "targil-2"]
