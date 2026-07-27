@@ -1,0 +1,9 @@
+[project]
+name = "targil-3"
+version = "0.1.0"
+description = "Exercise 3"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.140.7",
+    "uvicorn>=0.51.0",
+]
