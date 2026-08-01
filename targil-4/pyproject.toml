@@ -1,0 +1,8 @@
+[project]
+name = "targil-4"
+version = "0.1.0"
+description = "Exercise 4"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+]
