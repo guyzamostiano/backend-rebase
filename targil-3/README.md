@@ -7,9 +7,10 @@ A FastAPI + uvicorn HTTP server that stores binary blobs on the local disk, toge
 - **Header persistence:** `Content-Type` and any `x-rebase-*` header (case-insensitive) are stored alongside the blob and returned on `GET`.
 - **Content-Type inference:** if no `Content-Type` was stored, it is guessed from the id via `mimetypes`, falling back to `application/octet-stream`.
 - **Quota enforcement:** payload size, total disk usage, total blob count, header key/value lengths, header count and id format are all validated before anything is written.
-- **Atomic writes:** files are staged as `.tmp` and `fsync`ed before being swapped into place, so a crash can never expose a half-written blob.
+- **Atomic writes:** each blob (stored headers + payload) lives in a single file, staged as `.tmp` and `fsync`ed before being swapped into place with one `os.replace` — a crash at any point leaves either the old blob or the new one, never a mix.
+- **In-memory usage stats:** total disk usage and blob count are computed by scanning the disk once at startup, then updated incrementally on every write/delete, so requests never pay for a directory scan.
 
-Blobs are written to `targil-3/storage/blobs/` as two files per blob: `{id}.bin` (payload) and `{id}.headers.json` (stored headers).
+Blobs are written to `targil-3/storage/blobs/` as one file per blob: `{id}.blob`, containing a JSON line with the stored headers followed by the raw payload.
 
 ---
 
@@ -63,7 +64,7 @@ curl -X POST http://localhost:8000/blobs/hello.txt \
 | `invalid Content-Length header` | `Content-Length` is not a non-negative integer |
 | `Content-Length does not match payload` | declared length differs from the received body |
 | `payload length exceeds MAX_PAYLOAD_LENGTH` | payload larger than 10MB |
-| `disk space exceeds MAX_DISK_QUOTA` | storing the blob would push total disk usage past 1GB — payloads **and** stored-header files both count (the current version of an overwritten blob is excluded from the calculation) |
+| `disk space exceeds MAX_DISK_QUOTA` | storing the blob would push total disk usage past 1GB — the quota charges for the exact bytes stored on disk (headers + payload; the current version of an overwritten blob is excluded from the calculation) |
 | `total number of blobs exceeds MAX_BLOBS_TOTAL` | new blob would exceed 1,000,000 blobs |
 | `header key exceeds MAX_HEADER_KEY_LENGTH` | a stored header key is longer than 30 chars |
 | `header value exceeds MAX_HEADER_VALUE_LENGTH` | a stored header value is longer than 400 chars |

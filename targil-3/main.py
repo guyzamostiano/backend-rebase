@@ -2,6 +2,7 @@ import json
 import mimetypes
 import os
 import re
+import threading
 import uvicorn
 from pathlib import Path
 
@@ -20,17 +21,43 @@ MAX_BLOBS_TOTAL = 1_000_000
 ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 TMP_SUFFIX = ".tmp"
+BLOB_SUFFIX = ".blob"
 
 STORAGE_DIR = Path(__file__).parent / "storage" / "blobs"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def blob_path(blob_id: str) -> Path:
-    return STORAGE_DIR / f"{blob_id}.bin"
+    return STORAGE_DIR / f"{blob_id}{BLOB_SUFFIX}"
 
 
-def headers_path(blob_id: str) -> Path:
-    return STORAGE_DIR / f"{blob_id}.headers.json"
+class StorageStats:
+    """Disk usage and blob count, kept in memory and updated incrementally.
+
+    The disk is scanned exactly once, at startup.
+    every write/delete adjusts the counters
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.total_bytes = 0
+        self.blob_count = 0
+
+    def scan(self) -> None:
+        self.total_bytes = 0
+        self.blob_count = 0
+        for file in STORAGE_DIR.iterdir():
+            if not file.is_file():
+                continue
+            if file.name.endswith(TMP_SUFFIX):
+                file.unlink(missing_ok=True)
+                continue
+            self.total_bytes += file.stat().st_size
+            self.blob_count += 1
+
+
+stats = StorageStats()
+stats.scan()
 
 
 def validate_id(blob_id: str) -> None:
@@ -59,45 +86,27 @@ def extract_stored_headers(request: Request) -> dict:
     return stored_headers
 
 
-def write_atomically(writes: list[tuple[Path, bytes]]) -> None:
-    """Stage every file next to its target, then swap them all in.
+def encode_blob(stored_headers: dict, payload: bytes) -> bytes:
+    """Single-file blob format: one JSON line with the headers, then the payload."""
+    return json.dumps(stored_headers).encode() + b"\n" + payload
 
-    Each individual file appears either fully written or not at all, so a crash
-    can never expose a partially written blob.
-    """
-    staged = []
+
+def decode_blob(raw: bytes) -> tuple[dict, bytes]:
+    header_line, _, payload = raw.partition(b"\n")
+    return json.loads(header_line), payload
+
+
+def write_atomically(path: Path, data: bytes) -> None:
+    """Stage next to the target, then swap in with a single os.replace."""
+    tmp_path = path.parent / f"{path.name}{TMP_SUFFIX}"
     try:
-        for path, data in writes:
-            tmp_path = path.parent / f"{path.name}{TMP_SUFFIX}"
-            with open(tmp_path, "wb") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            staged.append((tmp_path, path))
-
-        for tmp_path, path in staged:
-            os.replace(tmp_path, path)
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
     finally:
-        for tmp_path, _ in staged:
-            tmp_path.unlink(missing_ok=True)
-
-
-def get_disk_usage(exclude_blob_id: str | None = None) -> int:
-    """Bytes held under STORAGE_DIR, counting payloads and stored headers alike."""
-    excluded = set()
-    if exclude_blob_id is not None:
-        excluded = {blob_path(exclude_blob_id).name, headers_path(exclude_blob_id).name}
-
-    total = 0
-    for file in STORAGE_DIR.iterdir():
-        if file.name in excluded or not file.is_file():
-            continue
-        total += file.stat().st_size
-    return total
-
-
-def count_blobs() -> int:
-    return sum(1 for _ in STORAGE_DIR.glob("*.bin"))
+        tmp_path.unlink(missing_ok=True)
 
 
 @app.get("/")
@@ -124,10 +133,6 @@ async def upsert_blob(blob_id: str, request: Request):
     if content_length > MAX_PAYLOAD_LENGTH:
         raise HTTPException(status_code=400, detail="payload length exceeds MAX_PAYLOAD_LENGTH")
 
-    is_new_blob = not blob_path(blob_id).exists()
-    if is_new_blob and count_blobs() >= MAX_BLOBS_TOTAL:
-        raise HTTPException(status_code=400, detail="total number of blobs exceeds MAX_BLOBS_TOTAL")
-
     stored_headers = extract_stored_headers(request)
 
     body = await request.body()
@@ -138,16 +143,25 @@ async def upsert_blob(blob_id: str, request: Request):
     if len(body) > MAX_PAYLOAD_LENGTH:
         raise HTTPException(status_code=400, detail="payload length exceeds MAX_PAYLOAD_LENGTH")
 
-    headers_body = json.dumps(stored_headers).encode()
+    file_body = encode_blob(stored_headers, body)
+    new_size = len(file_body)
+    path = blob_path(blob_id)
 
-    projected_usage = get_disk_usage(exclude_blob_id=blob_id) + len(body) + len(headers_body)
-    if projected_usage > MAX_DISK_QUOTA:
-        raise HTTPException(status_code=400, detail="disk space exceeds MAX_DISK_QUOTA")
+    with stats.lock:
+        old_size = path.stat().st_size if path.exists() else None
+        is_new_blob = old_size is None
 
-    write_atomically([
-        (blob_path(blob_id), body),
-        (headers_path(blob_id), headers_body),
-    ])
+        if is_new_blob and stats.blob_count >= MAX_BLOBS_TOTAL:
+            raise HTTPException(status_code=400, detail="total number of blobs exceeds MAX_BLOBS_TOTAL")
+
+        if stats.total_bytes - (old_size or 0) + new_size > MAX_DISK_QUOTA:
+            raise HTTPException(status_code=400, detail="disk space exceeds MAX_DISK_QUOTA")
+
+        write_atomically(path, file_body)
+
+        stats.total_bytes += new_size - (old_size or 0)
+        if is_new_blob:
+            stats.blob_count += 1
 
     return {"id": blob_id, "size": len(body)}
 
@@ -157,15 +171,12 @@ def get_blob(blob_id: str):
     validate_id(blob_id)
 
     path = blob_path(blob_id)
-    if not path.exists():
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="blob not found")
 
-    body = path.read_bytes()
-
-    stored_headers = {}
-    h_path = headers_path(blob_id)
-    if h_path.exists():
-        stored_headers = json.loads(h_path.read_text())
+    stored_headers, body = decode_blob(raw)
 
     response_headers = dict(stored_headers)
 
@@ -187,12 +198,13 @@ def delete_blob(blob_id: str):
     validate_id(blob_id)
 
     path = blob_path(blob_id)
-    h_path = headers_path(blob_id)
 
-    if path.exists():
-        path.unlink()
-    if h_path.exists():
-        h_path.unlink()
+    with stats.lock:
+        if path.exists():
+            size = path.stat().st_size
+            path.unlink()
+            stats.total_bytes -= size
+            stats.blob_count -= 1
 
     return Response(status_code=204)
 
