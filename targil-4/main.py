@@ -62,34 +62,39 @@ async def read_request_head(reader: asyncio.StreamReader) -> tuple[str, str, lis
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
-        try:
-            method, target, headers = await read_request_head(reader)
-        except ValueError:
-            writer.write(error_response(400, "Bad Request", "malformed request"))
-            return
-
-        if method != "GET":
-            writer.write(error_response(405, "Method Not Allowed", "proxy supports only GET"))
-            return
-
-        forward_headers = [(key, value) for key, value in headers if key.lower() not in NON_FORWARDED_HEADERS]
-
-        try:
-            response = await http_client.get(target, headers=forward_headers)
-        except httpx.HTTPError as e:
-            writer.write(error_response(502, "Bad Gateway", f"failed to reach destination: {e}"))
-            return
-
-        relayed_headers = [
-            (key, value)
-            for key, value in response.headers.multi_items()
-            if key.lower() not in RESPONSE_HEADERS_NOT_RELAYED
-        ]
-        writer.write(build_response(response.status_code, response.reason_phrase, relayed_headers, response.content))
+        await handle_client_inner(reader, writer)
     finally:
         await writer.drain()
         writer.close()
         await writer.wait_closed()
+
+
+async def handle_client_inner(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Serve one request: parse it, forward it, relay the response."""
+    try:
+        method, target, headers = await read_request_head(reader)
+    except ValueError:
+        writer.write(error_response(400, "Bad Request", "malformed request"))
+        return
+
+    if method != "GET":
+        writer.write(error_response(405, "Method Not Allowed", "proxy supports only GET"))
+        return
+
+    forward_headers = [(key, value) for key, value in headers if key.lower() not in NON_FORWARDED_HEADERS]
+
+    try:
+        response = await http_client.get(target, headers=forward_headers)
+    except httpx.HTTPError as e:
+        writer.write(error_response(502, "Bad Gateway", f"failed to reach destination: {e}"))
+        return
+
+    relayed_headers = [
+        (key, value)
+        for key, value in response.headers.multi_items()
+        if key.lower() not in RESPONSE_HEADERS_NOT_RELAYED
+    ]
+    writer.write(build_response(response.status_code, response.reason_phrase, relayed_headers, response.content))
 
 
 async def main() -> None:
