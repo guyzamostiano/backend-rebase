@@ -23,7 +23,7 @@ ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
 TMP_SUFFIX = ".tmp"
 BLOB_SUFFIX = ".blob"
 
-STORAGE_DIR = Path(__file__).parent / "storage" / "blobs"
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR") or Path(__file__).parent / "storage" / "blobs")
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -210,4 +210,4 @@ def delete_blob(blob_id: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
