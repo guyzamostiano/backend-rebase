@@ -33,6 +33,8 @@ for p in 8000 8001 8002; do
 done
 ```
 
+Or let the nodes register themselves by starting them with `MASTER_NODE_ADDRESS=localhost:8080`
+
 `destination.host` accepts only `a-z A-Z 0-9 _ -`, so use `localhost`, not `127.0.0.1`.
 
 # How to test
