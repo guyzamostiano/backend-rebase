@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import aiomysql
 import uvicorn
-from fastapi import FastAPI, Response, status
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "mysql://targil7:targil7@127.0.0.1:3306/users_service")
@@ -46,7 +46,9 @@ def build_logger() -> logging.Logger:
     if LOGZIO_TOKEN:
         from logzio.handler import LogzioHandler
 
-        logger.addHandler(LogzioHandler(LOGZIO_TOKEN, logzio_type="users-service", url=LOGZIO_URL))
+        # backup_logs=False: on repeated shipping failures the handler would otherwise
+        # append the dropped records to logzio-failures-<timestamp>.txt in the working directory.
+        logger.addHandler(LogzioHandler(LOGZIO_TOKEN, logzio_type="users-service", url=LOGZIO_URL, backup_logs=False))
     else:
         logger.warning("LOGZIO_TOKEN is not set, logging to console only")
     return logger
@@ -85,7 +87,7 @@ def to_iso_utc(naive_utc: datetime) -> str:
 _db = urlparse(DATABASE_URL)
 
 
-def connect() -> aiomysql.Connection:
+def connect() -> aiomysql.connection._ConnectionContextManager:
     """One connection per request; no pool, as the assignment allows.
 
     aiomysql (PyMySQL under the hood) does not set CLIENT_FOUND_ROWS, so rowcount
@@ -160,18 +162,21 @@ async def upsert_user(payload: UpsertUserRequest) -> Response:
     if affected == ROWCOUNT_REACTIVATED:
         log.info("user reactivated", extra={"event": "user_reactivated", **fields})
         return Response(status_code=status.HTTP_200_OK)
-    log.info("user already active", extra={"event": "user_already_active", **fields})
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    if affected == ROWCOUNT_ALREADY_ACTIVE:
+        log.info("user already active", extra={"event": "user_already_active", **fields})
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    log.error("unexpected upsert rowcount", extra={"event": "upsert_unexpected_rowcount", "rowcount": affected, **fields})
+    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @app.get("/users/{email}", response_model=UserResponse)
-async def get_user(email: str) -> UserResponse | Response:
+async def get_user(email: str) -> UserResponse:
     async with connect() as conn, conn.cursor() as cur:
         await cur.execute(GET_USER_SQL, (email,))
         row = await cur.fetchone()
 
     if row is None:
-        return Response(status_code=status.HTTP_404_NOT_FOUND)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     db_email, full_name, joined_at = row
     return UserResponse(email=db_email, full_name=full_name, joined_at=to_iso_utc(joined_at))
 
