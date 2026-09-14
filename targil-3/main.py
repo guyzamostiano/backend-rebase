@@ -1,8 +1,11 @@
+import http.client
 import json
+import logging
 import mimetypes
 import os
 import re
 import threading
+import time
 import uvicorn
 from pathlib import Path
 
@@ -23,8 +26,23 @@ ID_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
 TMP_SUFFIX = ".tmp"
 BLOB_SUFFIX = ".blob"
 
-STORAGE_DIR = Path(__file__).parent / "storage" / "blobs"
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR") or Path(__file__).parent / "storage" / "blobs")
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+PORT = int(os.getenv("PORT", "8000"))
+
+# When MASTER_NODE_ADDRESS is set, this server registers itself with the load
+# balancer on startup instead of being registered by hand.
+MASTER_NODE_ADDRESS = os.getenv("MASTER_NODE_ADDRESS")
+NODE_HOST = os.getenv("NODE_HOST", "localhost")
+NODE_NAME = os.getenv("NODE_NAME")
+
+DEFAULT_MASTER_PORT = 8080
+REGISTRATION_DEADLINE_SECONDS = 30
+REGISTRATION_RETRY_INTERVAL_SECONDS = 1
+REGISTRATION_ATTEMPT_TIMEOUT_SECONDS = 2
+
+logger = logging.getLogger("blob-server")
 
 
 def blob_path(blob_id: str) -> Path:
@@ -209,5 +227,56 @@ def delete_blob(blob_id: str):
     return Response(status_code=204)
 
 
+def parse_master_address(address: str) -> tuple[str, int]:
+    """Split "host:port"."""
+    host, _, port = address.partition(":")
+    return host, int(port) if port else DEFAULT_MASTER_PORT
+
+
+def register_once(master_host: str, master_port: int) -> tuple[int, str]:
+    payload = {"destination": {"host": NODE_HOST, "port": PORT}}
+    if NODE_NAME:
+        payload["name"] = NODE_NAME
+
+    connection = http.client.HTTPConnection(master_host, master_port, timeout=REGISTRATION_ATTEMPT_TIMEOUT_SECONDS)
+    try:
+        connection.request("POST", "/internal/nodes/", json.dumps(payload).encode(),
+                           {"Content-Type": "application/json"})
+        response = connection.getresponse()
+        return response.status, response.read().decode()
+    finally:
+        connection.close()
+
+
+def register_with_master() -> None:
+    """Register with the load balancer, retrying while it is not yet listening."""
+    try:
+        master_host, master_port = parse_master_address(MASTER_NODE_ADDRESS)
+    except ValueError:
+        logger.error("MASTER_NODE_ADDRESS is not a valid host:port: %r", MASTER_NODE_ADDRESS)
+        return
+
+    deadline = time.monotonic() + REGISTRATION_DEADLINE_SECONDS
+    while True:
+        try:
+            status, body = register_once(master_host, master_port)
+        except OSError as e:
+            # Refused or timed out: the master is not up yet, so keep polling.
+            if time.monotonic() >= deadline:
+                logger.error("gave up registering with %s after %ss: %s",
+                             MASTER_NODE_ADDRESS, REGISTRATION_DEADLINE_SECONDS, e)
+                return
+            time.sleep(REGISTRATION_RETRY_INTERVAL_SECONDS)
+            continue
+        if status == 200:
+            logger.info("registered with master %s as %s:%s -> %s", MASTER_NODE_ADDRESS, NODE_HOST, PORT, body)
+        else:
+            logger.error("master rejected registration: HTTP %s %s", status, body)
+        return
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if MASTER_NODE_ADDRESS:
+        threading.Thread(target=register_with_master, name="master-registration", daemon=True).start()
+    uvicorn.run(app, host="0.0.0.0", port=PORT)

@@ -38,6 +38,24 @@ curl http://localhost:8000/
 
 Interactive API docs (Swagger UI) are available at http://localhost:8000/docs.
 
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `8000` | port to listen on |
+| `STORAGE_DIR` | `./storage/blobs` | where blobs are written |
+| `MASTER_NODE_ADDRESS` | *(unset)* | when set, register with the load balancer on startup |
+| `NODE_HOST` | `localhost` | the host the load balancer should use to reach this server |
+| `NODE_NAME` | *(unset)* | optional name sent with the registration |
+
+`PORT` and `STORAGE_DIR` let several instances run side by side as nodes behind the load balancer of exercise 5:
+
+```bash
+PORT=8000 STORAGE_DIR=./storage/node1 MASTER_NODE_ADDRESS=localhost:8080 uv run main.py
+```
+
+With `MASTER_NODE_ADDRESS` set, the server `POST`s itself to `/internal/nodes/` on startup. If the load balancer is not up yet the attempt is retried for 30 seconds before giving up; the server keeps serving either way. A rejection from the load balancer (for example once its registration period is over) is final and is not retried.
+
 ---
 
 # API

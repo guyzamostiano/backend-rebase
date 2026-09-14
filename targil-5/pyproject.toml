@@ -1,0 +1,6 @@
+[project]
+name = "targil-5"
+version = "0.1.0"
+description = "Exercise 5"
+requires-python = ">=3.11"
+dependencies = []
