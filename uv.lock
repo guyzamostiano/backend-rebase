@@ -10,6 +10,7 @@ members = [
     "targil-3",
     "targil-4",
     "targil-7",
+    "targil-8",
 ]
 
 [[package]]
@@ -533,6 +534,23 @@ requires-dist = [
     { name = "aiomysql", specifier = ">=0.2" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "logzio-python-handler", specifier = ">=4.1" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[[package]]
+name = "targil-8"
+version = "0.1.0"
+source = { virtual = "targil-8" }
+dependencies = [
+    { name = "aiomysql" },
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiomysql", specifier = ">=0.2" },
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
 
